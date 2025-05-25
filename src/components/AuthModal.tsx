@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Phone } from 'lucide-react';
 import { StytchProvider, useStytch } from '@stytch/react';
+import { StytchUIClient } from '@stytch/vanilla-js';
 import { createClient } from '@supabase/supabase-js';
 import toast from 'react-hot-toast';
 
@@ -8,6 +9,8 @@ const supabase = createClient(
   import.meta.env.VITE_SUPABASE_URL,
   import.meta.env.VITE_SUPABASE_ANON_KEY
 );
+
+const stytchClient = new StytchUIClient(import.meta.env.VITE_STYTCH_PUBLIC_TOKEN);
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -18,16 +21,23 @@ const PhoneAuthForm = ({ onClose }: { onClose: () => void }) => {
   const [phoneNumber, setPhoneNumber] = useState('');
   const [code, setCode] = useState('');
   const [isVerifying, setIsVerifying] = useState(false);
-  const client = useStytch();
+  const [methodId, setMethodId] = useState('');
+  const stytch = useStytch();
 
   const handleSendCode = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await client.otps.sms.send({
-        phone_number: phoneNumber,
+      const response = await stytch.otps.sms.send(phoneNumber, {
+        expiration_minutes: 10,
       });
-      setIsVerifying(true);
-      toast.success('Verification code sent!');
+
+      if (response.method_id) {
+        setMethodId(response.method_id);
+        setIsVerifying(true);
+        toast.success('Verification code sent!');
+      } else {
+        throw new Error('No method_id received');
+      }
     } catch (error) {
       toast.error('Failed to send verification code');
       console.error('Error sending code:', error);
@@ -36,17 +46,18 @@ const PhoneAuthForm = ({ onClose }: { onClose: () => void }) => {
 
   const handleVerifyCode = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!methodId) {
+      toast.error('Invalid verification session');
+      return;
+    }
+
     try {
-      const response = await client.otps.authenticate({
-        method_id: 'phone_number',
-        code: code,
-        phone_number: phoneNumber,
-      });
+      const response = await stytch.otps.authenticate(methodId, code, { session_duration_minutes: 60 });
 
       // Sign in to Supabase with the Stytch token
-      const { error: supabaseError } = await supabase.auth.signInWithPassword({
-        phone: phoneNumber,
-        password: response.session_token, // Use Stytch token as password
+      const { error: supabaseError } = await supabase.auth.signInWithIdToken({
+        provider: 'stytch',
+        token: response.session_token,
       });
 
       if (supabaseError) throw supabaseError;
@@ -129,9 +140,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose }) => {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black bg-opacity-50">
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-xl w-full max-w-md">
-        <StytchProvider
-          publicToken={import.meta.env.VITE_STYTCH_PUBLIC_TOKEN}
-        >
+        <StytchProvider stytch={stytchClient}>
           <PhoneAuthForm onClose={onClose} />
         </StytchProvider>
       </div>
